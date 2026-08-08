@@ -1,4 +1,4 @@
-# ROCm GEMM benchmarking container
+# ROCm GEMM benchmarking sweep
 
 An Apptainer image that adds the rocBLAS and hipBLASLt clients —
 `rocblas-bench` and `hipblaslt-bench` — to the stock ROCm development image,
