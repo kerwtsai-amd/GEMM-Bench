@@ -26,16 +26,6 @@ machine-specific.
 ## Prerequisites
 
 - Apptainer 1.4+ with `--fakeroot` available
-- The base image, pulled once:
-
-```bash
-apptainer pull base.sif docker://rocm/dev-ubuntu-24.04:7.14.0-full
-```
-
-`apptainer.def` bootstraps from that local `base.sif` so repeated builds do not
-re-download ~8 GB. To make the definition self-contained instead, swap the
-`BootStrap`/`From` lines for the `docker://` variant commented at the top of
-the file.
 
 ## Build
 
