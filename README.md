@@ -103,46 +103,6 @@ precision is. A sample counts toward the steady state only once power exceeds
 the cap before clocks finish settling. A precision the GPU does not support
 produces no samples at all and is reported as `unsupported`.
 
-## Measured results
-
-16384³ GEMM, `T,N` layout, 25 s sustained per precision.
-
-**MI300X** (gfx942, 2100 MHz max SCLK, 750 W TBP):
-
-| Precision | Throughput | Steady clock | % of max clock | Power |
-| --- | --- | --- | --- | --- |
-| f64_r | 64.1 TFLOPS | 931 MHz | 44% | 750 W |
-| f32_r | 94.8 TFLOPS | 1270 MHz | 60% | 750 W |
-| tf32 | 262.8 TFLOPS | 1013 MHz | 48% | 751 W |
-| f16_r | 427.2 TFLOPS | 1513 MHz | 72% | 750 W |
-| bf16_r | 443.5 TFLOPS | 1543 MHz | 73% | 750 W |
-| i8_r | 1223.4 TOPS | 1644 MHz | 78% | 750 W |
-
-**MI350X** (gfx950, 2200 MHz max SCLK, 1000 W TBP):
-
-| Precision | Throughput | Steady clock | % of max clock | Power |
-| --- | --- | --- | --- | --- |
-| f64_r | 55.5 TFLOPS | 1800 MHz | 82% | 982 W |
-| f32_r | 116.2 TFLOPS | 1830 MHz | 83% | 990 W |
-| tf32 | unsupported | - | - | - |
-| f16_r | 1083.1 TFLOPS | 1132 MHz | 51% | 1000 W |
-| bf16_r | 1148.5 TFLOPS | 1257 MHz | 57% | 1000 W |
-| i8_r | 3117.1 TOPS | 2163 MHz | 98% | 975 W |
-
-Every precision on both parts pins at the power limit, and none sustain the
-nominal boost clock. Which precision suffers most is inverted between the two
-generations: on MI300X, FP64 collapses to 44% of max clock while low precision
-holds 72-78%; on MI350X, FP64 barely drops to 82% while FP16/BF16 fall to
-51-57%. This tracks CDNA4 halving the FP64 matrix rate (163.4 → 72.1 TFLOPS
-peak) and doubling FP16, which moves the power bottleneck from FP64 to the
-low-precision datapaths. The practical consequence is that peak clock cannot be
-used to predict achievable throughput for any precision.
-
-The power-limited behaviour was verified directly: on MI300X the same kernel
-runs at 2093 MHz while power is still ramping through 176 W, then drops to
-~1137 MHz the moment power pins at 750 W, with junction temperature only 73 °C
-— far from any thermal limit.
-
 ## Notes
 
 **Host environment leaks into the container.** A `module load rocm` on the host
