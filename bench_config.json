@@ -12,6 +12,12 @@
     "csv": null
   },
 
+  "roofline": {
+    "binary": "rocprof-compute",
+    "peaks_file": "machine_peaks.json",
+    "bandwidth": "HBMBw"
+  },
+
   "backends": {
     "rocblas": {
       "label": "rocBLAS",
@@ -41,12 +47,16 @@
     "f64_r": {
       "unit": "TFLOPS",
       "note": "FP64 and complex are rocBLAS territory; hipBLASLt does not tune them.",
+      "peak": "MFMAF64Flops",
+      "bytes": {"ab": 8, "cd": 8},
       "args": {
         "rocblas": ["-f", "gemm", "-r", "f64_r"]
       }
     },
     "f32_r": {
       "unit": "TFLOPS",
+      "peak": "MFMAF32Flops",
+      "bytes": {"ab": 4, "cd": 4},
       "args": {
         "rocblas": ["-f", "gemm", "-r", "f32_r"],
         "hipblaslt": ["--a_type", "f32_r", "--b_type", "f32_r",
@@ -57,6 +67,9 @@
     "tf32": {
       "unit": "TFLOPS",
       "note": "FP32 data, TF32 compute: --math_mode 1 in rocBLAS, xf32_r in hipBLASLt.",
+      "peak": null,
+      "bytes": {"ab": 4, "cd": 4},
+      "peak_note": "The roofline microbenchmark has no TF32 ceiling, and gfx950 emulates TF32 rather than running it on the MFMA units, so dividing by the FP32 ceiling would be meaningless. Left blank on purpose.",
       "args": {
         "rocblas": ["-f", "gemm_ex", "--a_type", "f32_r", "--b_type", "f32_r",
                     "--c_type", "f32_r", "--d_type", "f32_r",
@@ -68,6 +81,8 @@
     },
     "f16_r": {
       "unit": "TFLOPS",
+      "peak": "MFMAF16Flops",
+      "bytes": {"ab": 2, "cd": 2},
       "args": {
         "rocblas": ["-f", "gemm_ex", "--a_type", "f16_r", "--b_type", "f16_r",
                     "--c_type", "f16_r", "--d_type", "f16_r",
@@ -79,6 +94,8 @@
     },
     "bf16_r": {
       "unit": "TFLOPS",
+      "peak": "MFMABF16Flops",
+      "bytes": {"ab": 2, "cd": 2},
       "args": {
         "rocblas": ["-f", "gemm_ex", "--a_type", "bf16_r", "--b_type", "bf16_r",
                     "--c_type", "bf16_r", "--d_type", "bf16_r",
@@ -90,6 +107,8 @@
     },
     "i8_r": {
       "unit": "TOPS",
+      "peak": "MFMAI8Ops",
+      "bytes": {"ab": 1, "cd": 4},
       "args": {
         "rocblas": ["-f", "gemm_ex", "--a_type", "i8_r", "--b_type", "i8_r",
                     "--c_type", "i32_r", "--d_type", "i32_r",
@@ -102,6 +121,8 @@
     "f8_r": {
       "unit": "TFLOPS",
       "note": "f8_r is the portable spelling: fnuz on gfx942, OCP FP8 on gfx950. rocblas-bench has no f8 type.",
+      "peak": "MFMAF8Flops",
+      "bytes": {"ab": 1, "cd": 2},
       "args": {
         "hipblaslt": ["--a_type", "f8_r", "--b_type", "f8_r",
                       "--c_type", "f16_r", "--d_type", "f16_r",
