@@ -129,17 +129,21 @@ repository in is all the setup there is. The recorded MI300X sweep in
 appears once:
 
 ```
-┌───────────┬──────────────┬───────────────┬──────────────┬─────────────┬───────┐
-│ Precision │ BLAS backend │    Throughput │ Steady Clock │ % Max Clock │ Power │
-├───────────┼──────────────┼───────────────┼──────────────┼─────────────┼───────┤
-│ f64_r     │ rocBLAS      │   63.8 TFLOPS │      931 MHz │         44% │ 750 W │
-│ f32_r     │ rocBLAS      │   95.0 TFLOPS │     1270 MHz │         60% │ 750 W │
-│ tf32      │ rocBLAS      │  262.8 TFLOPS │     1006 MHz │         48% │ 751 W │
-│ f16_r     │ rocBLAS      │  429.5 TFLOPS │     1504 MHz │         72% │ 750 W │
-│ bf16_r    │ rocBLAS      │  444.0 TFLOPS │     1537 MHz │         73% │ 750 W │
-│ i8_r      │ rocBLAS      │   1222.3 TOPS │     1644 MHz │         78% │ 750 W │
-│ f8_r      │ hipBLASLt    │ 1153.1 TFLOPS │     1212 MHz │         58% │ 751 W │
-└───────────┴──────────────┴───────────────┴──────────────┴─────────────┴───────┘
+┌───────────┬──────────────┬───────────────┬──────────────┬─────────────┬────────┐
+│ Precision │ BLAS backend │    Throughput │ Steady Clock │ % Max Clock │  Power │
+├───────────┼──────────────┼───────────────┼──────────────┼─────────────┼────────┤
+│ f64_r     │ rocBLAS      │   55.4 TFLOPS │     1795 MHz │         82% │  983 W │
+│ f32_r     │ rocBLAS      │  115.7 TFLOPS │     1826 MHz │         83% │  988 W │
+│ f32_r     │ hipBLASLt    │  130.7 TFLOPS │     2095 MHz │         95% │  969 W │
+│ tf32      │ hipBLASLt    │  392.9 TFLOPS │     1318 MHz │         60% │ 1000 W │
+│ f16_r     │ rocBLAS      │ 1082.5 TFLOPS │     1129 MHz │         51% │ 1000 W │
+│ f16_r     │ hipBLASLt    │ 1081.0 TFLOPS │     1126 MHz │         51% │ 1000 W │
+│ bf16_r    │ rocBLAS      │ 1149.1 TFLOPS │     1256 MHz │         57% │ 1000 W │
+│ bf16_r    │ hipBLASLt    │ 1146.0 TFLOPS │     1252 MHz │         57% │ 1000 W │
+│ i8_r      │ rocBLAS      │   3087.7 TOPS │     2159 MHz │         98% │  970 W │
+│ i8_r      │ hipBLASLt    │   2304.1 TOPS │     1465 MHz │         67% │ 1000 W │
+│ f8_r      │ hipBLASLt    │ 2100.3 TFLOPS │     1501 MHz │         68% │  999 W │
+└───────────┴──────────────┴───────────────┴──────────────┴─────────────┴────────┘
 ```
 
 Progress goes to stderr and the table to stdout, so redirecting stdout leaves
