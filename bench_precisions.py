@@ -41,7 +41,8 @@ BUILTIN_DEFAULTS = {
 
 DEVICE_RE = re.compile(r"^Device ID \d+ : (.+)$", re.MULTILINE)
 MAXCLK_RE = re.compile(r"max\. SCLK (\d+) MHz")
-SCLK_RE = re.compile(r"\((\d+)\s*Mhz\)", re.IGNORECASE)
+
+AGENT_RE = re.compile(r"^Agent \d+")
 
 
 def log(message="", end="\n"):
@@ -54,13 +55,14 @@ def die(message):
     sys.exit(1)
 
 
-def capture(argv, merge_stderr=False):
+def capture(argv, merge_stderr=False, env=None):
     try:
         proc = subprocess.run(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
-            universal_newlines=True)
+            universal_newlines=True,
+            env=env)
     except OSError:
         return None
     return proc.stdout
@@ -89,74 +91,158 @@ def parse_result(output, gflops_column, time_column):
     return gflops, microseconds
 
 
-def bench(backend, args, iters, warmup, size):
+def bench(backend, args, iters, warmup, size, env):
     argv = [backend["binary"]]
     argv += [a.format(size=size) for a in backend["common_args"]]
     argv += [a.format(size=size) for a in args]
     argv += [backend["iters_flag"], str(iters)]
     argv += [backend["warmup_flag"], str(warmup)]
-    return parse_result(capture(argv),
+    return parse_result(capture(argv, env=env),
                         backend["gflops_column"], backend["time_column"])
 
 
-def amd_smi_max_clock():
-    output = capture(["amd-smi", "metric", "-g", "0"])
+def format_bdf(domain, bdfid):
+    """rocminfo packs bus, device and function into one integer."""
+    return "%04x:%02x:%02x.%d" % (domain, (bdfid >> 8) & 0xff,
+                                  (bdfid >> 3) & 0x1f, bdfid & 0x7)
+
+
+def visible_gpu_bdfs():
+    """PCI addresses of the GPUs visible to this process, in HIP device order.
+    rocminfo goes through the same runtime the benchmarks do, so it already
+    accounts for however the scheduler set ROCR_VISIBLE_DEVICES."""
+    output = capture(["rocminfo"])
+    if not output:
+        return []
+    bdfs = []
+    agent = {}
+
+    def flush():
+        if agent.get("gpu") and "bdfid" in agent:
+            bdfs.append(format_bdf(agent.get("domain", 0), agent["bdfid"]))
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if AGENT_RE.match(stripped):
+            flush()
+            agent.clear()
+        elif stripped.startswith("Device Type:"):
+            agent["gpu"] = stripped.endswith("GPU")
+        elif stripped.startswith("Domain:") or stripped.startswith("BDFID:"):
+            key, _, value = stripped.partition(":")
+            value = value.strip()
+            if value.isdigit():
+                agent[key.lower()] = int(value)
+    flush()
+    return bdfs
+
+
+def amd_smi_gpus():
+    output = capture(["amd-smi", "list", "--json"])
+    if not output:
+        return []
+    try:
+        return json.loads(output)
+    except ValueError:
+        return []
+
+
+def resolve_gpu(device):
+    """(amd-smi index, PCI address) of the GPU the benchmarks will use.
+
+    amd-smi numbers GPUs by PCI address and the ROCm runtime by KFD node id,
+    and on a multi-GPU node those two orders differ, so an index from one is
+    meaningless to the other. Matching on the PCI address sidesteps the whole
+    question and works the same under a scheduler or on a bare node."""
+    bdfs = visible_gpu_bdfs()
+    if device >= len(bdfs):
+        return None, None
+    wanted = bdfs[device]
+    for gpu in amd_smi_gpus():
+        if str(gpu.get("bdf", "")).lower() == wanted:
+            return str(gpu.get("gpu")), wanted
+    return None, wanted
+
+
+def amd_smi_clock_power(index):
+    """The clock and power section of amd-smi's report for one GPU, or None if
+    the GPU could not be resolved, the tool is missing, or the driver is down."""
+    if index is None:
+        return None
+    output = capture(["amd-smi", "metric", "-g", index, "-c", "-p", "--json"])
     if not output:
         return None
-    for line in output.splitlines():
-        if "MAX_CLK" in line:
-            fields = line.split()
-            digits = re.sub(r"[^0-9]", "", fields[1]) if len(fields) > 1 else ""
-            if digits:
-                return int(digits)
-    return None
+    try:
+        return json.loads(output)["gpu_data"][0]
+    except (ValueError, KeyError, IndexError):
+        return None
 
 
-def detect_gpu(binary):
+def scalar(field):
+    """amd-smi wraps each reading as {"value": ..., "unit": ...} and writes the
+    string "N/A" where a sensor is absent."""
+    if isinstance(field, dict):
+        field = field.get("value")
+    return float(field) if isinstance(field, (int, float)) else None
+
+
+def gfx_clocks(data, key):
+    """MI300-class parts report `key` once per XCD, as gfx_0 ... gfx_7."""
+    clocks = []
+    for name, entry in data.get("clock", {}).items():
+        if name.startswith("gfx") and isinstance(entry, dict):
+            value = scalar(entry.get(key))
+            if value:
+                clocks.append(value)
+    return clocks
+
+
+def amd_smi_max_clock(index):
+    data = amd_smi_clock_power(index)
+    clocks = gfx_clocks(data, "max_clk") if data else []
+    return int(max(clocks)) if clocks else None
+
+
+def detect_gpu(binary, index, env):
     """Returns (name, max_sclk_mhz). The banner rocblas-bench prints on any run
     carries both; amd-smi is the fallback for the clock."""
     output = capture([binary, "-f", "gemm", "-r", "f32_r",
                       "-m", "64", "-n", "64", "-k", "64", "-i", "1"],
-                     merge_stderr=True)
+                     merge_stderr=True, env=env)
     if output is None:
         return None, None
     found = DEVICE_RE.search(output)
     name = found.group(1).strip() if found else "unknown"
     found = MAXCLK_RE.search(output)
-    return name, int(found.group(1)) if found else amd_smi_max_clock()
+    return name, int(found.group(1)) if found else amd_smi_max_clock(index)
 
 
-def sample_clock_power():
-    output = capture(["rocm-smi", "--showpower", "--showgpuclocks"])
-    if not output:
+def sample_clock_power(index):
+    """(sclk MHz, socket W) for one GPU. The XCDs run in lockstep under a large
+    GEMM, so the fastest one is the boost the kernel actually reached while any
+    XCD left idle only reports its deep-sleep clock."""
+    data = amd_smi_clock_power(index)
+    if not data:
         return None
-    clock = power = None
-    for line in output.splitlines():
-        if "sclk" in line:
-            found = SCLK_RE.findall(line)
-            if found:
-                clock = float(found[-1])
-        elif "Package Power" in line:
-            try:
-                power = float(line.split()[-1])
-            except (IndexError, ValueError):
-                pass
-    if clock is None or power is None:
+    power = scalar(data.get("power", {}).get("socket_power"))
+    clocks = gfx_clocks(data, "clk")
+    if power is None or not clocks:
         return None
-    return clock, power
+    return max(clocks), power
 
 
 class Sampler(threading.Thread):
-    def __init__(self, interval):
+    def __init__(self, interval, index):
         threading.Thread.__init__(self)
         self.daemon = True
         self.interval = interval
+        self.index = index
         self.samples = []
         self._done = threading.Event()
 
     def run(self):
         while not self._done.wait(self.interval):
-            reading = sample_clock_power()
+            reading = sample_clock_power(self.index)
             if reading:
                 self.samples.append(reading)
 
@@ -314,6 +400,8 @@ def parse_args(argv):
     parser.add_argument("-o", "--output", help="also write results as CSV")
     parser.add_argument("-f", "--format", choices=("table", "markdown", "csv"),
                         help="stdout format (default: table)")
+    parser.add_argument("-d", "--device", type=int, default=0,
+                        help="which of the visible GPUs to use (default: 0)")
     parser.add_argument("--sample-interval", type=float,
                         help="seconds between clock/power samples")
     parser.add_argument("--list-chips", action="store_true",
@@ -345,8 +433,14 @@ def main(argv=None):
                        if args.precisions else None)
     only_backends = set(args.backends.split(",")) if args.backends else None
 
+    # Pinning the children to one device makes the GPU being sampled and the
+    # GPU doing the work the same by construction rather than by inference.
+    env = dict(os.environ)
+    env["HIP_VISIBLE_DEVICES"] = str(args.device)
+    index, bdf = resolve_gpu(args.device)
+
     probe = config["backends"]["rocblas"]["binary"]
-    gpu, max_clock = detect_gpu(probe)
+    gpu, max_clock = detect_gpu(probe, index, env)
     if gpu is None:
         die("%s not found; run this inside the container" % probe)
 
@@ -355,13 +449,17 @@ def main(argv=None):
     if not cases:
         die("no cases left to run after filtering")
 
-    idle = sample_clock_power()
+    idle = sample_clock_power(index)
     idle_power = idle[1] if idle else 0.0
     # A sample counts as loaded once power clears 1.5x idle; this drops the
     # ramp-up and, for an unsupported precision, leaves nothing at all.
     threshold = idle_power * defaults["loaded_power_factor"]
 
-    log("GPU: %s" % gpu)
+    if index is None:
+        log("warning: could not match device %d to an amd-smi GPU%s; clock and "
+            "power will be blank" % (args.device, " (%s)" % bdf if bdf else ""))
+    log("GPU: %s   Device: %d -> %s (amd-smi index %s)"
+        % (gpu, args.device, bdf or "?", index if index is not None else "?"))
     log("Profile: %s (%s)   Max SCLK: %s MHz   Idle power: %g W   Size: %d^3   "
         "Target: %gs/case"
         % (chip_key, chip.get("description", ""), max_clock or "?", idle_power,
@@ -376,7 +474,7 @@ def main(argv=None):
         log("calibrating %-*s ... " % (width, label), end="")
 
         trial = bench(backend, bench_args, defaults["calibration_iters"],
-                      defaults["calibration_warmup"], size)
+                      defaults["calibration_warmup"], size, env)
         if trial is None:
             log("unsupported on this GPU")
             results.append(unsupported_row(name, key))
@@ -385,10 +483,10 @@ def main(argv=None):
         iters = max(int(target * 1e6 / trial[1]), defaults["min_iters"])
         log("%g us/iter -> %d iters, running ... " % (trial[1], iters), end="")
 
-        sampler = Sampler(interval)
+        sampler = Sampler(interval, index)
         sampler.start()
         measured = bench(backend, bench_args, iters,
-                         defaults["warmup_iters"], size)
+                         defaults["warmup_iters"], size, env)
         samples = sampler.stop()
 
         # Drop the first loaded sample: power is at the cap but clocks are still
@@ -405,7 +503,8 @@ def main(argv=None):
         throughput = "%.1f" % (measured[0] / 1000.0)
         pct = ("%.0f" % (float(clock) * 100 / max_clock)
                if clock and max_clock else "-")
-        log("%s %s" % (throughput, unit))
+        log("%s %s%s" % (throughput, unit,
+                         "" if loaded else "  (no loaded samples)"))
         results.append({"precision": name, "backend": key, "unit": unit,
                         "throughput": throughput, "clock": clock or "-",
                         "pct": pct, "power": power or "-"})

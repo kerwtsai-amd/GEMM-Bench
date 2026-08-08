@@ -155,6 +155,7 @@ only the results. Under a C locale the box characters fall back to ASCII.
 | `-t SECONDS` | Target duration per case (default 25) |
 | `-p LIST` | Comma-separated precision subset, e.g. `-p f64_r,f16_r` |
 | `-b LIST` | Comma-separated backend subset, e.g. `-b hipblaslt` |
+| `-d N` | Which of the visible GPUs to use (default 0) |
 | `-o FILE` | Also write results as CSV |
 | `-f FORMAT` | Stdout format: `table`, `markdown` or `csv` |
 | `-c FILE` | Configuration file (default `bench_config.json` beside the script) |
@@ -168,6 +169,16 @@ precision is. A sample counts toward the steady state only once power exceeds
 the cap before clocks finish settling. A combination the GPU or library does not
 support produces no result at all and is reported as `unsupported` rather than
 aborting the sweep.
+
+Clock and power come from `amd-smi`, which has to be pointed at the one GPU
+doing the work: on a multi-GPU node it numbers GPUs by PCI address while the
+ROCm runtime numbers them by KFD node id, and those orders do not agree, so an
+index carried across from one to the other lands on an idle neighbour and every
+reading comes back blank. The script instead pins the benchmarks to the device
+given by `-d` and finds it in `amd-smi` by matching the PCI address `rocminfo`
+reports for it, which needs nothing from the scheduler and so behaves the same
+under Slurm as on a bare node. The header line prints the resolved address and
+index; verify it there if the numbers ever look wrong.
 
 ### Configuration
 
