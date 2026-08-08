@@ -1,22 +1,24 @@
 # ROCm GEMM benchmarking container
 
-An Apptainer image that adds the rocBLAS clients — most importantly
-`rocblas-bench` — to the stock ROCm development image, plus a script that
-sweeps GEMM across precisions and reports the clock and power the GPU actually
-settles at rather than its nominal boost clock.
+An Apptainer image that adds the rocBLAS and hipBLASLt clients —
+`rocblas-bench` and `hipblaslt-bench` — to the stock ROCm development image,
+plus a script that sweeps GEMM across precisions and reports the clock and
+power the GPU actually settles at rather than its nominal boost clock.
 
-The AMD ROCm packages ship `librocblas.so` but not the benchmark and test
-executables, so the clients have to be compiled from source. This image builds
-them against the rocBLAS library already present in the base image, pinned to
-the exact upstream commit that library was built from, so the two are
-ABI-compatible.
+The AMD ROCm packages ship `librocblas.so` and `libhipblaslt.so` but not the
+benchmark and test executables, so the clients have to be compiled from source.
+This image builds them against the libraries already present in the base image,
+pinned to the exact upstream commit those libraries were built from, so the two
+are ABI-compatible.
 
 ## Contents
 
 | File | Purpose |
 | --- | --- |
-| `apptainer.def` | Container definition: ROCm 7.14 + rocBLAS clients |
-| `bench_precisions.sh` | Precision sweep with clock/power sampling |
+| `apptainer.def` | Container definition: ROCm 7.14 + rocBLAS and hipBLASLt clients |
+| `bench_precisions.py` | Precision sweep with clock/power sampling |
+| `bench_config.json` | Which precisions and backends each chip runs |
+| `bench_precisions.sh` | The original single-backend sweep, kept for reference |
 
 `*.sif` images and `*.csv` results are gitignored; they are large and
 machine-specific.
@@ -41,13 +43,16 @@ the file.
 apptainer build --fakeroot rocblas.sif apptainer.def
 ```
 
-Takes about 3.5 minutes on a 188-core host and produces a ~7.6 GB image. Only
-the clients are compiled; the rocBLAS library itself is not rebuilt, which is
-what keeps the build short. `rocblas-test` is off by default because it adds
-hours — set `BUILD_TESTS=ON` in `%post` if you need it.
+Takes about 11 minutes on a 188-core host and produces a ~7.7 GB image. Only
+the clients are compiled — neither library is rebuilt, and hipBLASLt is built
+with `-n` so its Tensile kernels are not regenerated either. That is what keeps
+the build short. `rocblas-test` is off by default because it adds hours; set
+`BUILD_TESTS=ON` in `%post` if you need it. `hipblaslt-test` is cheap and is
+always built.
 
-Device code is generated for `gfx908`, `gfx90a`, `gfx942` and `gfx950`, i.e.
-MI100, MI200, MI300X and MI350X.
+rocBLAS device code is generated for `gfx908`, `gfx90a`, `gfx942` and `gfx950`
+(MI100, MI200, MI300X, MI350X). hipBLASLt only supports CDNA2 and newer, so its
+clients are built for `gfx942` and `gfx950` only.
 
 ## Running
 
@@ -78,30 +83,115 @@ but only at small sizes — it is very slow.
 `apptainer run` is wired to `rocblas-bench`, so the `exec rocblas.sif
 rocblas-bench` prefix can be shortened to `run rocblas.sif`.
 
+### hipblaslt-bench
+
+`rocblas-bench` has no FP8 type, so FP8 has to go through hipBLASLt. Note the
+different flag spellings — `--transA`/`--transB` rather than
+`--transposeA`/`--transposeB`:
+
+```bash
+srun -N1 -n1 -p mi3001x --gres=gpu:1 -t 00:15:00 \
+  apptainer exec rocblas.sif \
+  hipblaslt-bench --transA T --transB N -m 8192 -n 8192 -k 8192 \
+    --a_type f8_r --b_type f8_r --c_type f16_r --d_type f16_r \
+    --compute_type f32_r -i 50 -j 10
+```
+
+Use `--a_type`/`--b_type` for FP8, not `--compute_input_typeA`/`B`. The latter
+keeps the operands in f16 and downconverts every iteration, which measures the
+conversion rather than the GEMM — about 30 TFLOPS instead of 1200 on MI300X.
+
+`f8_r` is the portable spelling: hipBLASLt maps it to the `f8_fnuz_r` format on
+gfx942 and to OCP FP8 on gfx950. Asking for `f8_r` through
+`--compute_input_type` on gfx942 instead fails with `NO solution found`.
+
+hipBLASLt and rocBLAS results are not directly comparable even at the same
+precision — hipBLASLt reaches roughly 1.5x rocBLAS on f16 — so the sweep script
+labels which library produced each row.
+
 ## Precision sweep
 
-`bench_precisions.sh` runs a sustained GEMM per precision while sampling clock
-and power, then prints a summary table:
+`bench_precisions.py` runs a sustained GEMM per precision while sampling clock
+and power, then prints a summary table. Where a data type exists in both
+libraries it is measured on both, one row each, so the two are directly
+comparable:
 
 ```bash
 srun -N1 -n1 -p mi3501x --gres=gpu:1 -t 00:40:00 \
   apptainer exec --bind "$PWD":/work rocblas.sif \
-  bash /work/bench_precisions.sh -o /work/mi350x.csv
+  python3 /work/bench_precisions.py -o /work/mi350x.csv
 ```
+
+Only the standard library is used, so the container's own `python3` is enough,
+and `bench_config.json` is read from beside the script, so binding the
+repository in is all the setup there is. The recorded MI300X sweep in
+`mi300x.csv` renders like this — it predates the two-backend rows, so each type
+appears once:
+
+```
+┌───────────┬──────────────┬───────────────┬──────────────┬─────────────┬───────┐
+│ Precision │ BLAS backend │    Throughput │ Steady Clock │ % Max Clock │ Power │
+├───────────┼──────────────┼───────────────┼──────────────┼─────────────┼───────┤
+│ f64_r     │ rocBLAS      │   63.8 TFLOPS │      931 MHz │         44% │ 750 W │
+│ f32_r     │ rocBLAS      │   95.0 TFLOPS │     1270 MHz │         60% │ 750 W │
+│ tf32      │ rocBLAS      │  262.8 TFLOPS │     1006 MHz │         48% │ 751 W │
+│ f16_r     │ rocBLAS      │  429.5 TFLOPS │     1504 MHz │         72% │ 750 W │
+│ bf16_r    │ rocBLAS      │  444.0 TFLOPS │     1537 MHz │         73% │ 750 W │
+│ i8_r      │ rocBLAS      │   1222.3 TOPS │     1644 MHz │         78% │ 750 W │
+│ f8_r      │ hipBLASLt    │ 1153.1 TFLOPS │     1212 MHz │         58% │ 751 W │
+└───────────┴──────────────┴───────────────┴──────────────┴─────────────┴───────┘
+```
+
+Progress goes to stderr and the table to stdout, so redirecting stdout leaves
+only the results. Under a C locale the box characters fall back to ASCII.
 
 | Option | Meaning |
 | --- | --- |
 | `-s SIZE` | Square GEMM dimension (default 16384) |
-| `-t SECONDS` | Target duration per precision (default 25) |
-| `-p LIST` | Comma-separated subset, e.g. `-p f64_r,f16_r` |
+| `-t SECONDS` | Target duration per case (default 25) |
+| `-p LIST` | Comma-separated precision subset, e.g. `-p f64_r,f16_r` |
+| `-b LIST` | Comma-separated backend subset, e.g. `-b hipblaslt` |
 | `-o FILE` | Also write results as CSV |
+| `-f FORMAT` | Stdout format: `table`, `markdown` or `csv` |
+| `-c FILE` | Configuration file (default `bench_config.json` beside the script) |
+| `--chip NAME` | Use a named chip profile instead of the detected one |
+| `--list-chips` | Print the profiles in the config and exit |
 
-Iteration counts are calibrated per precision from a short trial run, so every
+Iteration counts are calibrated per case from a short trial run, so every
 measurement covers the same wall-clock duration regardless of how fast the
 precision is. A sample counts toward the steady state only once power exceeds
 1.5x idle, and the first qualifying sample is discarded because power reaches
-the cap before clocks finish settling. A precision the GPU does not support
-produces no samples at all and is reported as `unsupported`.
+the cap before clocks finish settling. A combination the GPU or library does not
+support produces no result at all and is reported as `unsupported` rather than
+aborting the sweep.
+
+### Configuration
+
+Which precisions run, and on which backends, is decided entirely by
+`bench_config.json`; adding a data type or a chip needs no change to the script.
+
+| Section | Contents |
+| --- | --- |
+| `defaults` | Matrix size, target seconds per case, sampling interval, iteration floors, output format |
+| `backends` | Per-library binary name, the common arguments, and which CSV columns carry throughput and time |
+| `precisions` | Per data type: the unit (`TFLOPS` or `TOPS`) and one argument template per backend |
+| `chips` | Per architecture: the strings that identify it, and an ordered map of precision to backend list |
+
+The chip profile is picked by matching each profile's `match` strings against
+the GPU name `rocblas-bench` reports, falling back to `default`. `--chip`
+overrides the choice, which is how you can dry-run an MI300X profile from an
+MI100 login node and watch every hipBLASLt row degrade to `unsupported`.
+
+To add a data type, add an entry under `precisions` with an argument template
+for each backend that can run it, then list it under the chips that should
+measure it. To add a chip, copy a profile, change `match` to something that
+appears in its device name, and prune the `run` map. A precision listed for a
+backend that has no template for it is a configuration error and is reported as
+one before any benchmarking starts.
+
+The two shipped profiles differ in one place: `gfx942` measures TF32 on both
+libraries, while `gfx950` measures it on hipBLASLt only, because rocBLAS's
+`--math_mode 1` path returns no result there.
 
 ## How the libraries relate
 
@@ -182,7 +272,7 @@ than cloning rocBLAS directly.
 | TF32 compute on FP32 data | `--math_mode 1`, gfx942 only | `HIPBLAS_COMPUTE_32F_FAST_TF32`, native on gfx942, emulated on gfx950 | yes |
 | `f16_r`, `bf16_r` | yes | yes, and where new tuning lands | yes |
 | `i8_r` → `i32_r` | yes | yes | yes |
-| FP8 `e4m3` / `e5m2` | no | yes — `fnuz` on gfx942, OCP on gfx950 | no |
+| FP8 `e4m3` / `e5m2` | no | yes — `fnuz` on gfx942, OCP on gfx950 | yes, via `hipblaslt-bench` |
 | FP4 `e2m1` | no | input only, gfx950 | no |
 
 The two ends of that table are exclusive, and that is the cleanest way to
@@ -198,12 +288,14 @@ may not be yours to make: `f16_r` and `bf16_r` exist in both, hipBLASLt is
 usually where the newer kernels and tuning land, and rocBLAS's auto-selection
 may already be routing those calls to hipBLASLt. The FP16 and BF16 numbers in
 `mi300x.csv` and `mi350x.csv` were collected without pinning a backend, so some
-of them are plausibly hipBLASLt kernels measured through the rocBLAS API. To
-find out, run the sweep twice — if the two agree, Tensile served both:
+of them are plausibly hipBLASLt kernels measured through the rocBLAS API. The
+sweep now benchmarks both libraries directly, which shows the gap but not which
+kernel served the rocBLAS row; to settle that, pin the backend and compare — if
+the two agree, Tensile served both:
 
 ```bash
-ROCBLAS_USE_HIPBLASLT=0 bash /work/bench_precisions.sh -p f16_r,bf16_r -o /work/tensile.csv
-ROCBLAS_USE_HIPBLASLT=1 bash /work/bench_precisions.sh -p f16_r,bf16_r -o /work/hipblaslt.csv
+ROCBLAS_USE_HIPBLASLT=0 python3 /work/bench_precisions.py -b rocblas -p f16_r,bf16_r -o /work/tensile.csv
+ROCBLAS_USE_HIPBLASLT=1 python3 /work/bench_precisions.py -b rocblas -p f16_r,bf16_r -o /work/hipblaslt.csv
 ```
 
 ## Notes
@@ -215,19 +307,20 @@ every HIP source file. `%post` unsets these before building and `%environment`
 re-asserts `ROCM_PATH`/`HIP_PATH` so the runtime is protected too. If you hit
 something similar with another container, `--cleanenv` is the quick diagnostic.
 
-**FP8 is not covered.** `rocblas-bench` in this version supports precisions only
-up to `i8_r`; FP8 GEMM goes through hipBLASLt, and the base image ships
-`libhipblaslt.so` without `hipblaslt-bench`. Building the hipBLASLt clients the
-same way rocBLAS's are built — `projects/hipblaslt` in the same monorepo
-checkout — would add it.
+**FP8 needs hipblaslt-bench.** `rocblas-bench` in this version supports
+precisions only up to `i8_r`, and the base image ships `libhipblaslt.so`
+without its clients — hence the second build in `%post`. See the
+`hipblaslt-bench` section above for the invocation that measures the GEMM
+rather than an f16-to-f8 conversion.
 
-**TF32 is MI300X-only through this path.** The `--math_mode 1` path returns no
+**TF32 is MI300X-only through rocBLAS.** The `--math_mode 1` path returns no
 result on gfx950 and leaves the GPU idle, consistent with the MI350X datasheet
 not listing a TF32 rate while the MI300X one specifies 653.7 TFLOPS. The
 capability is not absent from the part, though: hipBLASLt documents
-`HIPBLAS_COMPUTE_32F_FAST_TF32` as native on gfx942 and *emulated* on gfx950, so
-a TF32 number for MI350X would have to come from `hipblaslt-bench` and would be
-measuring emulation rather than hardware.
+`HIPBLAS_COMPUTE_32F_FAST_TF32` as native on gfx942 and *emulated* on gfx950,
+which is why the `gfx950` profile routes TF32 to `hipblaslt-bench` with
+`--compute_type xf32_r`. Any MI350X TF32 number is measuring emulation rather
+than hardware.
 
 **Larger is not always faster.** Both parts lose throughput going from 8192³ to
 16384³ (MI300X 79.3 → 64.0 TFLOPS in FP64), so quote the size alongside any

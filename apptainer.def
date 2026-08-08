@@ -1,11 +1,6 @@
 BootStrap: docker
 From: rocm/dev-ubuntu-24.04:7.14.0-full
 
-# base.sif was pulled from rocm/dev-ubuntu-24.04:7.14.0-full. To rebuild the
-# whole thing from scratch instead, swap the two lines above for:
-#   BootStrap: docker
-#   From: rocm/dev-ubuntu-24.04:7.14.0-full
-
 %post
     set -eux
 
@@ -18,19 +13,22 @@ From: rocm/dev-ubuntu-24.04:7.14.0-full
     export PATH=/opt/rocm/bin:$PATH
     export DEBIAN_FRONTEND=noninteractive
 
-    # Matches rocBLAS 5.5.0.cd957402 as shipped in the base image, so the
-    # clients are ABI-compatible with /opt/rocm/lib/librocblas.so.
-    ROCBLAS_COMMIT=cd9574023093742434e8c992d13b89ab9a6c1cf8
+    # Matches rocBLAS 5.5.0.cd957402 and hipBLASLt 1.4.1.cd957402 as shipped in
+    # the base image, so the clients are ABI-compatible with the installed
+    # /opt/rocm/lib libraries.
+    COMMIT=cd9574023093742434e8c992d13b89ab9a6c1cf8
     GPU_TARGETS="gfx908:xnack-;gfx90a;gfx942;gfx950"
+    # hipBLASLt supports CDNA2 and newer only.
+    HIPBLASLT_TARGETS="gfx942;gfx950"
     # Flip to ON to also get rocblas-test (adds hours to the build).
     BUILD_TESTS=OFF
 
     apt-get update
     apt-get install -y --no-install-recommends \
-        ca-certificates git make cmake pkg-config \
-        gfortran libomp-dev \
+        ca-certificates git wget make cmake pkg-config \
+        gfortran libomp-dev libmsgpack-dev \
         libopenblas-dev libgtest-dev libgmock-dev \
-        python3 python3-yaml
+        python3 python3-yaml python3-venv python3-pip
     rm -rf /var/lib/apt/lists/*
 
     mkdir -p /opt/src
@@ -39,8 +37,12 @@ From: rocm/dev-ubuntu-24.04:7.14.0-full
         https://github.com/ROCm/rocm-libraries.git
     cd rocm-libraries
     git sparse-checkout init --cone
-    git sparse-checkout set projects/rocblas shared/ctest
-    git checkout "$ROCBLAS_COMMIT"
+    # hipBLASLt pulls in several sibling projects plus the top-level cmake
+    # modules; without them its configure step fails.
+    git sparse-checkout set cmake projects/rocblas projects/hipblaslt \
+        shared/ctest shared/origami shared/mxdatagenerator shared/rocroller \
+        shared/stinkytofu shared/tensile
+    git checkout "$COMMIT"
 
     cd projects/rocblas
     ./install.sh --clients-only \
@@ -53,7 +55,22 @@ From: rocm/dev-ubuntu-24.04:7.14.0-full
     # the whole staging directory together and only symlink the executables.
     mkdir -p /opt/rocblas-clients
     cp -a build/release/clients/staging/. /opt/rocblas-clients/
-    for exe in /opt/rocblas-clients/rocblas-*; do
+
+    # -n builds the clients without generating Tensile kernels; they link the
+    # host library and load kernels from /opt/rocm/lib at runtime. Once the
+    # build tree is deleted the binaries fall back to the installed
+    # libhipblaslt.so.1, which is the same commit.
+    cd ../hipblaslt
+    ./install.sh -c -n --skip_rocroller \
+        -a "$HIPBLASLT_TARGETS" \
+        -j "$(nproc)"
+
+    mkdir -p /opt/hipblaslt-clients
+    cp -a build/release/clients/hipblaslt-* \
+          build/release/clients/hipblaslt_gentest.py \
+          build/release/clients/*.yaml /opt/hipblaslt-clients/
+
+    for exe in /opt/rocblas-clients/rocblas-* /opt/hipblaslt-clients/hipblaslt-*; do
         [ -x "$exe" ] || continue
         ln -sf "$exe" /opt/rocm/bin/"$(basename "$exe")"
     done
@@ -72,11 +89,14 @@ From: rocm/dev-ubuntu-24.04:7.14.0-full
 
 %labels
     rocblas.version 5.5.0
-    rocblas.commit cd9574023093742434e8c992d13b89ab9a6c1cf8
+    hipblaslt.version 1.4.1
+    rocm_libraries.commit cd9574023093742434e8c992d13b89ab9a6c1cf8
 
 %help
-    ROCm 7.14 with the rocBLAS clients (rocblas-bench, rocblas-gemm-tune) built
-    from source against the rocBLAS library already in the image.
+    ROCm 7.14 with the rocBLAS clients (rocblas-bench, rocblas-gemm-tune) and
+    the hipBLASLt clients (hipblaslt-bench, hipblaslt-test) built from source
+    against the libraries already in the image. Use hipblaslt-bench for FP8,
+    which rocblas-bench does not support.
 
     Build:
         apptainer build rocblas.sif apptainer.def

@@ -1,0 +1,153 @@
+{
+  "defaults": {
+    "size": 16384,
+    "target_seconds": 25,
+    "sample_interval_s": 2.0,
+    "calibration_iters": 10,
+    "calibration_warmup": 2,
+    "min_iters": 20,
+    "warmup_iters": 20,
+    "loaded_power_factor": 1.5,
+    "format": "table",
+    "csv": null
+  },
+
+  "backends": {
+    "rocblas": {
+      "label": "rocBLAS",
+      "binary": "rocblas-bench",
+      "common_args": ["--transposeA", "T", "--transposeB", "N",
+                      "-m", "{size}", "-n", "{size}", "-k", "{size}",
+                      "--alpha", "1", "--beta", "0"],
+      "iters_flag": "-i",
+      "warmup_flag": "-j",
+      "gflops_column": -2,
+      "time_column": -1
+    },
+    "hipblaslt": {
+      "label": "hipBLASLt",
+      "binary": "hipblaslt-bench",
+      "common_args": ["--transA", "T", "--transB", "N",
+                      "-m", "{size}", "-n", "{size}", "-k", "{size}",
+                      "--alpha", "1", "--beta", "0"],
+      "iters_flag": "-i",
+      "warmup_flag": "-j",
+      "gflops_column": -3,
+      "time_column": -1
+    }
+  },
+
+  "precisions": {
+    "f64_r": {
+      "unit": "TFLOPS",
+      "note": "FP64 and complex are rocBLAS territory; hipBLASLt does not tune them.",
+      "args": {
+        "rocblas": ["-f", "gemm", "-r", "f64_r"]
+      }
+    },
+    "f32_r": {
+      "unit": "TFLOPS",
+      "args": {
+        "rocblas": ["-f", "gemm", "-r", "f32_r"],
+        "hipblaslt": ["--a_type", "f32_r", "--b_type", "f32_r",
+                      "--c_type", "f32_r", "--d_type", "f32_r",
+                      "--compute_type", "f32_r"]
+      }
+    },
+    "tf32": {
+      "unit": "TFLOPS",
+      "note": "FP32 data, TF32 compute: --math_mode 1 in rocBLAS, xf32_r in hipBLASLt.",
+      "args": {
+        "rocblas": ["-f", "gemm_ex", "--a_type", "f32_r", "--b_type", "f32_r",
+                    "--c_type", "f32_r", "--d_type", "f32_r",
+                    "--compute_type", "f32_r", "--math_mode", "1"],
+        "hipblaslt": ["--a_type", "f32_r", "--b_type", "f32_r",
+                      "--c_type", "f32_r", "--d_type", "f32_r",
+                      "--compute_type", "xf32_r"]
+      }
+    },
+    "f16_r": {
+      "unit": "TFLOPS",
+      "args": {
+        "rocblas": ["-f", "gemm_ex", "--a_type", "f16_r", "--b_type", "f16_r",
+                    "--c_type", "f16_r", "--d_type", "f16_r",
+                    "--compute_type", "f32_r"],
+        "hipblaslt": ["--a_type", "f16_r", "--b_type", "f16_r",
+                      "--c_type", "f16_r", "--d_type", "f16_r",
+                      "--compute_type", "f32_r"]
+      }
+    },
+    "bf16_r": {
+      "unit": "TFLOPS",
+      "args": {
+        "rocblas": ["-f", "gemm_ex", "--a_type", "bf16_r", "--b_type", "bf16_r",
+                    "--c_type", "bf16_r", "--d_type", "bf16_r",
+                    "--compute_type", "f32_r"],
+        "hipblaslt": ["--a_type", "bf16_r", "--b_type", "bf16_r",
+                      "--c_type", "bf16_r", "--d_type", "bf16_r",
+                      "--compute_type", "f32_r"]
+      }
+    },
+    "i8_r": {
+      "unit": "TOPS",
+      "args": {
+        "rocblas": ["-f", "gemm_ex", "--a_type", "i8_r", "--b_type", "i8_r",
+                    "--c_type", "i32_r", "--d_type", "i32_r",
+                    "--compute_type", "i32_r"],
+        "hipblaslt": ["--a_type", "i8_r", "--b_type", "i8_r",
+                      "--c_type", "i32_r", "--d_type", "i32_r",
+                      "--compute_type", "i32_r"]
+      }
+    },
+    "f8_r": {
+      "unit": "TFLOPS",
+      "note": "f8_r is the portable spelling: fnuz on gfx942, OCP FP8 on gfx950. rocblas-bench has no f8 type.",
+      "args": {
+        "hipblaslt": ["--a_type", "f8_r", "--b_type", "f8_r",
+                      "--c_type", "f16_r", "--d_type", "f16_r",
+                      "--compute_type", "f32_r"]
+      }
+    }
+  },
+
+  "chips": {
+    "gfx942": {
+      "description": "MI300X / MI325X",
+      "match": ["gfx942"],
+      "run": {
+        "f64_r": ["rocblas"],
+        "f32_r": ["rocblas", "hipblaslt"],
+        "tf32": ["rocblas", "hipblaslt"],
+        "f16_r": ["rocblas", "hipblaslt"],
+        "bf16_r": ["rocblas", "hipblaslt"],
+        "i8_r": ["rocblas", "hipblaslt"],
+        "f8_r": ["hipblaslt"]
+      }
+    },
+    "gfx950": {
+      "description": "MI350X / MI355X",
+      "note": "rocBLAS --math_mode 1 returns no result on gfx950, so TF32 goes through hipBLASLt, which emulates it.",
+      "match": ["gfx950"],
+      "run": {
+        "f64_r": ["rocblas"],
+        "f32_r": ["rocblas", "hipblaslt"],
+        "tf32": ["hipblaslt"],
+        "f16_r": ["rocblas", "hipblaslt"],
+        "bf16_r": ["rocblas", "hipblaslt"],
+        "i8_r": ["rocblas", "hipblaslt"],
+        "f8_r": ["hipblaslt"]
+      }
+    },
+    "default": {
+      "description": "Anything older than CDNA3, where the hipBLASLt clients are not built",
+      "match": [],
+      "run": {
+        "f64_r": ["rocblas"],
+        "f32_r": ["rocblas"],
+        "f16_r": ["rocblas"],
+        "bf16_r": ["rocblas"],
+        "i8_r": ["rocblas"]
+      }
+    }
+  }
+}
