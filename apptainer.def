@@ -1,0 +1,89 @@
+BootStrap: docker
+From: rocm/dev-ubuntu-24.04:7.14.0-full
+
+# base.sif was pulled from rocm/dev-ubuntu-24.04:7.14.0-full. To rebuild the
+# whole thing from scratch instead, swap the two lines above for:
+#   BootStrap: docker
+#   From: rocm/dev-ubuntu-24.04:7.14.0-full
+
+%post
+    set -eux
+
+    # The host's `module load rocm` exports HIP_PATH=/opt/rocm-7.2.0 and friends
+    # into the build environment. That path does not exist in here, so amdclang
+    # fails with "cannot find HIP runtime" on every HIP source file.
+    unset HIP_PATH CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LD_LIBRARY_PATH
+    unset PKG_CONFIG_PATH PYTHONPATH CMAKE_PREFIX_PATH
+    export ROCM_PATH=/opt/rocm
+    export PATH=/opt/rocm/bin:$PATH
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Matches rocBLAS 5.5.0.cd957402 as shipped in the base image, so the
+    # clients are ABI-compatible with /opt/rocm/lib/librocblas.so.
+    ROCBLAS_COMMIT=cd9574023093742434e8c992d13b89ab9a6c1cf8
+    GPU_TARGETS="gfx908:xnack-;gfx90a;gfx942;gfx950"
+    # Flip to ON to also get rocblas-test (adds hours to the build).
+    BUILD_TESTS=OFF
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates git make cmake pkg-config \
+        gfortran libomp-dev \
+        libopenblas-dev libgtest-dev libgmock-dev \
+        python3 python3-yaml
+    rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /opt/src
+    cd /opt/src
+    git clone --filter=tree:0 --no-checkout -b develop \
+        https://github.com/ROCm/rocm-libraries.git
+    cd rocm-libraries
+    git sparse-checkout init --cone
+    git sparse-checkout set projects/rocblas shared/ctest
+    git checkout "$ROCBLAS_COMMIT"
+
+    cd projects/rocblas
+    ./install.sh --clients-only \
+        -a "$GPU_TARGETS" \
+        --cmake-darg BUILD_CLIENTS_TESTS=$BUILD_TESTS \
+        --cmake-darg BUILD_CLIENTS_SAMPLES=OFF \
+        -j "$(nproc)"
+
+    # rocblas-bench reads the yaml files next to it when given --yaml, so keep
+    # the whole staging directory together and only symlink the executables.
+    mkdir -p /opt/rocblas-clients
+    cp -a build/release/clients/staging/. /opt/rocblas-clients/
+    for exe in /opt/rocblas-clients/rocblas-*; do
+        [ -x "$exe" ] || continue
+        ln -sf "$exe" /opt/rocm/bin/"$(basename "$exe")"
+    done
+
+    rm -rf /opt/src
+
+%environment
+    # Re-assert these so a host `module load rocm` leaking in does not point the
+    # container at a ROCm tree that is not here.
+    export ROCM_PATH=/opt/rocm
+    export HIP_PATH=/opt/rocm
+    export PATH=/opt/rocm/bin:$PATH
+
+%runscript
+    exec rocblas-bench "$@"
+
+%labels
+    rocblas.version 5.5.0
+    rocblas.commit cd9574023093742434e8c992d13b89ab9a6c1cf8
+
+%help
+    ROCm 7.14 with the rocBLAS clients (rocblas-bench, rocblas-gemm-tune) built
+    from source against the rocBLAS library already in the image.
+
+    Build:
+        apptainer build rocblas.sif apptainer.def
+
+    Run (the image carries its own ROCm, so --rocm is not needed and only
+    causes host libraries to shadow it):
+        apptainer exec rocblas.sif rocblas-bench --version
+        apptainer run  rocblas.sif -f gemm -r f32_r \
+            --transposeA N --transposeB N -m 4096 -n 4096 -k 4096 \
+            --alpha 1 --lda 4096 --ldb 4096 --beta 0 --ldc 4096 -i 20 -j 5
