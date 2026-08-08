@@ -1,4 +1,4 @@
-# GEMM benchmarking container
+# ROCm GEMM benchmarking container
 
 An Apptainer image that adds the rocBLAS clients — most importantly
 `rocblas-bench` — to the stock ROCm development image, plus a script that
