@@ -109,17 +109,17 @@ produces no samples at all and is reported as `unsupported`.
 graph TD
     app["Your code"]
 
-    hipblas["hipBLAS<br/>portable BLAS API"]
-    hipblaslt["hipBLASLt — GEMM only, fused epilogues<br/>only here: fp8, fp4<br/>shared: fp16, bf16, fp32, tf32, int8"]
-    rocblas["rocBLAS — full BLAS<br/>only here: fp64, complex<br/>shared: fp32, tf32, fp16, bf16, int8"]
+    hipblas["hipBLAS portable BLAS API"]
+    hipblaslt["hipBLASLt — GEMM only, fused epilogues only here: fp8, fp4 shared: fp16, bf16, fp32, tf32, int8"]
+    rocblas["rocBLAS — full BLAS only here: fp64, complex shared: fp32, tf32, fp16, bf16, int8"]
     cublas["cuBLAS"]
     cublaslt["cuBLASLt"]
 
-    tensile["Tensile<br/>kernel generator + autotuner"]
-    tensilelite["TensileLite<br/>hard fork of Tensile"]
+    tensile["Tensile kernel generator + autotuner"]
+    tensilelite["TensileLite hard fork of Tensile"]
 
-    rocblaslib["librocblas.so<br/>+ rocblas/library/*.dat"]
-    hipbltlib["libhipblaslt.so<br/>+ hipblaslt/library/*.dat"]
+    rocblaslib["librocblas.so + rocblas/library/*.dat"]
+    hipbltlib["libhipblaslt.so + hipblaslt/library/*.dat"]
 
     app --> hipblas
     app --> hipblaslt
